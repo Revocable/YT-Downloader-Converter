@@ -1,161 +1,160 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
 import yt_dlp
 import threading
-import tkinter as tk
-from tkinter import messagebox
-from tkinter import ttk
 import os
-import subprocess
-import requests
-from io import BytesIO
-from PIL import Image
 
-# Baixar e converter músicas
-def baixar_musica(url, log_text, destino, progresso, total_musicas):
-    ydl_opts = {
-        'format': 'bestaudio[ext=m4a]',
-        'audio_quality': 0,
-        'extractaudio': True,
-        'outtmpl': os.path.join(destino, '%(title)s.%(ext)s'),
-    }
+# Classe principal da aplicação
+class MusicDownloaderApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("YouTube Music Downloader by AI")
+        self.root.geometry("500x450")
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(url, download=False)
-        title = info_dict.get('title', 'Desconhecido').replace("/", "-")
-        artist = info_dict.get('uploader', 'Desconhecido')
-        thumbnail_url = info_dict.get('thumbnail', '')
+        # --- Widgets da Interface ---
+        self.label_url = tk.Label(root, text="Insira o link da música ou playlist do YouTube/Music:")
+        self.label_url.pack(pady=(10, 5))
+
+        self.entry_url = tk.Entry(root, width=60)
+        self.entry_url.pack(pady=5, padx=20)
+
+        self.btn_baixar = tk.Button(root, text="Baixar e Converter", command=self.iniciar_download)
+        self.btn_baixar.pack(pady=10)
         
-        ydl.download([url])
+        # Frame para os progressos
+        progress_frame = tk.Frame(root)
+        progress_frame.pack(pady=10, fill=tk.X, padx=20)
+
+        self.status_label = tk.Label(progress_frame, text="Aguardando link...")
+        self.status_label.pack()
         
-        img_path = None
-        if thumbnail_url:
+        self.progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=400, mode='determinate')
+        self.progress_bar.pack(pady=5)
+        
+        self.total_progress_label = tk.Label(progress_frame, text="")
+        self.total_progress_label.pack()
+        
+        self.total_progress_bar = ttk.Progressbar(progress_frame, orient='horizontal', length=400, mode='determinate')
+        self.total_progress_bar.pack(pady=5)
+
+        # Log de atividades
+        self.log_text = tk.Text(root, height=10, width=50, state='disabled')
+        log_scrollbar = tk.Scrollbar(root, command=self.log_text.yview)
+        self.log_text.config(yscrollcommand=log_scrollbar.set)
+        
+        self.log_text.pack(pady=10, padx=20, side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.download_count = 0
+        self.total_musicas = 0
+
+    def add_log(self, message):
+        """ Adiciona uma mensagem ao log da interface """
+        self.log_text.config(state='normal')
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.config(state='disabled')
+        self.log_text.yview(tk.END)
+
+    def progress_hook(self, d):
+        """ Hook chamado pelo yt-dlp durante o download """
+        if d['status'] == 'finished':
+            # Quando um arquivo termina de ser processado (download + conversão)
+            filename = d.get('filename', 'arquivo')
+            base_name = os.path.basename(filename)
+            self.add_log(f"[CONCLUÍDO] {base_name}")
+            
+            # Atualiza a barra de progresso total
+            self.download_count += 1
+            progress_percent = (self.download_count / self.total_musicas) * 100
+            self.total_progress_bar['value'] = progress_percent
+            self.total_progress_label.config(text=f"Progresso Total: {self.download_count}/{self.total_musicas}")
+            self.root.update_idletasks()
+
+        if d['status'] == 'downloading':
+            # Atualiza o status do download atual
+            percent_str = d.get('_percent_str', '0.0%').strip()
+            speed_str = d.get('_speed_str', '0 B/s').strip()
+            eta_str = d.get('_eta_str', 'N/A').strip()
+            
             try:
-                img_data = requests.get(thumbnail_url).content
-                img = Image.open(BytesIO(img_data))
-                img_path = os.path.join(destino, f"{title}_cover.jpg")
-                img.convert('RGB').save(img_path)
-            except Exception as e:
-                log_text.insert(tk.END, f"Erro ao baixar imagem: {str(e)}\n")
+                # Extrai o valor numérico da porcentagem
+                progress_value = float(percent_str.replace('%', ''))
+                self.progress_bar['value'] = progress_value
+            except ValueError:
+                self.progress_bar['value'] = 0
+            
+            self.status_label.config(text=f"Baixando: {percent_str} a {speed_str} (ETA: {eta_str})")
+            self.root.update_idletasks()
 
-        audio_file = os.path.join(destino, f"{title}.m4a")
-        mp3_file = os.path.join(destino, f"{title}.mp3")
-        
-        if os.path.exists(audio_file):
-            try:
-                ffmpeg_cmd = [
-                    'ffmpeg',
-                    '-i', audio_file,
-                    '-i', img_path,
-                    '-map', '0:a',
-                    '-map', '1',
-                    '-c:a', 'libmp3lame',
-                    '-b:a', '320k',
-                    '-id3v2_version', '3',
-                    '-metadata', f'artist={artist}',
-                    '-metadata', f'title={title}',
-                    '-metadata:s:v', 'title="Album cover"',
-                    '-metadata:s:v', 'comment="Cover (front)"',
-                    '-disposition:v', 'attached_pic',
-                    mp3_file
-                ]
-                subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-
-            except subprocess.CalledProcessError as e:
-                log_text.insert(tk.END, f"Erro FFmpeg: {e.stderr.decode()}\n")
-            except Exception as e:
-                log_text.insert(tk.END, f"Erro geral: {str(e)}\n")
-            finally:
-                if os.path.exists(audio_file):
-                    os.remove(audio_file)
-                if img_path and os.path.exists(img_path):
-                    os.remove(img_path)
-
-        log_text.insert(tk.END, f"Finalizado: {title}\n")
-        log_text.yview(tk.END)
-        progresso['value'] += (100 / total_musicas)
-        progresso.update()
-
-def converter_musicas(destino):
-    def converter_audio(caminho_arquivo):
-        try:
-            output_file = os.path.splitext(caminho_arquivo)[0] + ".mp3"
-            subprocess.run([
-                'ffmpeg', '-i', caminho_arquivo, '-vn', '-ar', '44100', '-ac', '2',
-                '-b:a', '320k', '-map_metadata', '0', output_file
-            ], check=True)
-            os.remove(caminho_arquivo)
-        except Exception as e:
-            print(f"Erro ao converter {caminho_arquivo}: {str(e)}")
-
-    for root_dir, dirs, files in os.walk(destino):
-        for file in files:
-            if file.endswith(('.m4a', '.mp3')):
-                caminho_arquivo = os.path.join(root_dir, file)
-                threading.Thread(target=converter_audio, args=(caminho_arquivo,)).start()
-
-# Interface gráfica e thread de download
-def baixar():
-    url = entry_url.get()
-    if not url:
-        messagebox.showerror("Erro", "Por favor, insira o link da música ou playlist.")
-        return
-    
-    ydl_opts = {
-        'quiet': True,
-        'extract_flat': True,
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info_dict = ydl.extract_info(url, download=False)
-            if 'entries' in info_dict:
-                urls = [entry['url'] for entry in info_dict['entries']]
-                playlist_name = info_dict.get('title', 'Playlist')
-                destino = playlist_name
-            else:
-                urls = [url]
-                playlist_name = "Music"
-                destino = "Music"
-                
-            if not os.path.exists(destino):
-                os.makedirs(destino)
-        except Exception as e:
-            messagebox.showerror("Erro", f"Ocorreu um erro ao processar: {str(e)}")
+    def iniciar_download(self):
+        url = self.entry_url.get()
+        if not url:
+            messagebox.showerror("Erro", "Por favor, insira um link.")
             return
 
-    total_musicas = len(urls)
-    
-    progresso = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate', maximum=100)
-    progresso.pack(pady=10)
-
-    def download_thread():
-        threads = []
-        for url in urls:
-            thread = threading.Thread(target=baixar_musica, args=(url, log_text, destino, progresso, total_musicas))
-            threads.append(thread)
-            thread.start()
+        # Desabilitar botão para evitar cliques duplos
+        self.btn_baixar.config(state='disabled')
+        self.status_label.config(text="Analisando o link...")
+        self.progress_bar['value'] = 0
+        self.total_progress_bar['value'] = 0
+        self.download_count = 0
+        self.total_musicas = 0
         
-        for thread in threads:
-            thread.join()
-        
-        converter_musicas(destino)
-        messagebox.showinfo("Sucesso", "Download e conversão completos!")
+        # Inicia o processo de download em uma thread separada para não travar a GUI
+        download_thread = threading.Thread(target=self.run_download_thread, args=(url,))
+        download_thread.start()
 
-    threading.Thread(target=download_thread).start()
+    def run_download_thread(self, url):
+        try:
+            # 1. Obter informações da playlist/vídeo para saber quantos itens baixar
+            with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if 'entries' in info:
+                    # É uma playlist
+                    self.total_musicas = len(info['entries'])
+                    playlist_folder = info.get('title', 'Playlist').replace('/', '_').replace('\\', '_')
+                    output_template = os.path.join(playlist_folder, '%(title)s.%(ext)s')
+                else:
+                    # É um vídeo único
+                    self.total_musicas = 1
+                    output_template = os.path.join('Músicas Avulsas', '%(title)s.%(ext)s')
+            
+            self.add_log(f"Iniciando download de {self.total_musicas} música(s)...")
+            self.total_progress_label.config(text=f"Progresso Total: 0/{self.total_musicas}")
+            
+            # 2. Configurar as opções de download e pós-processamento
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': output_template,
+                'progress_hooks': [self.progress_hook],
+                'ignoreerrors': True, # Não para o download se uma música falhar
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320', # Qualidade de 320k
+                }, {
+                    'key': 'EmbedThumbnail', # Incorpora a capa do álbum
+                }, {
+                    'key': 'FFmpegMetadata', # Garante que os metadados sejam escritos
+                }],
+            }
+            
+            # 3. Executar o download
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-root = tk.Tk()
-root.title("Downloader de Música")
+            self.status_label.config(text="Download e conversão concluídos!")
+            messagebox.showinfo("Sucesso", "Todas as músicas foram baixadas e convertidas com sucesso!")
 
-label_url = tk.Label(root, text="Insira o link da música ou playlist do YouTube Music:")
-label_url.pack(pady=5)
+        except Exception as e:
+            self.status_label.config(text="Ocorreu um erro.")
+            self.add_log(f"[ERRO] {str(e)}")
+            messagebox.showerror("Erro", f"Ocorreu um erro: {str(e)}")
+        finally:
+            # Reabilitar o botão ao final do processo
+            self.btn_baixar.config(state='normal')
 
-entry_url = tk.Entry(root, width=40)
-entry_url.pack(pady=5)
-
-btn_baixar = tk.Button(root, text="Baixar", command=baixar)
-btn_baixar.pack(pady=10)
-
-log_text = tk.Text(root, height=10, width=50)
-log_text.pack(pady=10)
-log_text.insert(tk.END, "Log de downloads:\n")
-
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MusicDownloaderApp(root)
+    root.mainloop()
